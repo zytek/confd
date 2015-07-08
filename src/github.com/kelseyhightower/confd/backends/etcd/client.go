@@ -2,10 +2,13 @@ package etcd
 
 import (
 	"errors"
+	"fmt"
+	"net/http"
 	"strings"
 	"time"
 
 	goetcd "github.com/coreos/go-etcd/etcd"
+	"github.com/kelseyhightower/confd/log"
 )
 
 // Client is a wrapper around the etcd client
@@ -28,6 +31,8 @@ func NewEtcdClient(machines []string, cert, key string, caCert string) (*Client,
 	}
 	// Configure the DialTimeout, since 1 second is often too short
 	c.SetDialTimeout(time.Duration(3) * time.Second)
+	// Provide our function so client won't permanently disconnect from etcd
+	c.CheckRetry = CheckRetry
 	success := c.SetCluster(machines)
 	if !success {
 		return &Client{c}, errors.New("cannot connect to etcd cluster: " + strings.Join(machines, ","))
@@ -85,4 +90,21 @@ func (c *Client) WatchPrefix(prefix string, waitIndex uint64, stopChan chan bool
 		return waitIndex, err
 	}
 	return resp.Node.ModifiedIndex, err
+}
+
+// Gently handle etcd failures
+func CheckRetry(cluster *goetcd.Cluster, numReqs int, lastResp http.Response,
+	err error) error {
+
+	// don't spam etcd in case of issues
+	defer time.Sleep(time.Millisecond * 200)
+
+	if err != nil {
+		log.Error("Error connecting to etcd: " + err.Error())
+		return nil
+	}
+
+	log.Warning(fmt.Sprintf("Retrying request to etcd, last response code: %d",
+		lastResp.StatusCode))
+	return nil
 }
